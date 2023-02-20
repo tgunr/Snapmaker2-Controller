@@ -227,13 +227,19 @@ ErrCode Linear::Init(MAC_t &mac, uint8_t mac_index) {
   return canhost.BindMessageID(cmd, message_id);
 }
 
+void Linear::reset_axis_steps_per_unit(void) {
+  LOOP_X_TO_EN(i) {
+    planner.settings.axis_steps_per_mm[i] = axis_steps_per_unit[i];
+  }
+
+}
+
 ErrCode Linear::CheckModuleType() {
   int32_t i;
   uint32_t device_id = 0xffffffff;
   uint32_t id;
   MAC_t mac_t;
   // Initialize variables before detecting errors to avoid M999 movement errors
-  float axis_steps_per_unit[] = DEFAULT_AXIS_STEPS_PER_UNIT;
   if ((mac_index_[LINEAR_AXIS_X1] != 0xff) || (mac_index_[LINEAR_AXIS_X2] != 0xff)) {
     axis_steps_per_unit[X_AXIS] = mac_index_[LINEAR_AXIS_X1] != 0xff ? lead_[LINEAR_AXIS_X1] : lead_[LINEAR_AXIS_X2];
   }
@@ -244,6 +250,8 @@ ErrCode Linear::CheckModuleType() {
 
   if ((mac_index_[LINEAR_AXIS_Z1] != 0xff) || (mac_index_[LINEAR_AXIS_Z2] != 0xff) || (mac_index_[LINEAR_AXIS_Z3] != 0xff)) {
     axis_steps_per_unit[Z_AXIS] = mac_index_[LINEAR_AXIS_Z1] != 0xff ? lead_[LINEAR_AXIS_Z1] : mac_index_[LINEAR_AXIS_Z2] != 0xff ? lead_[LINEAR_AXIS_Z2] : lead_[LINEAR_AXIS_Z3];
+  } else {
+    axis_steps_per_unit[Z_AXIS] = MODULE_LINEAR_PITCH_20;
   }
 
   LOOP_XYZ(i) {
@@ -330,20 +338,11 @@ ErrCode Linear::PollEndstop(LinearAxisType axis) {
 
 MachineSize Linear::UpdateMachineSize() {
   bool is_err = false;
-  if (length_[LINEAR_AXIS_X1] < 200) {
-    // A150 judges only 3 axes,
-    if (length_[LINEAR_AXIS_X1] == 0 ||
-        length_[LINEAR_AXIS_X1] != length_[LINEAR_AXIS_Y1] ||
-        length_[LINEAR_AXIS_Y1] != length_[LINEAR_AXIS_Z1]) {
-      is_err = true;
-    }
-  } else {
-    if (length_[LINEAR_AXIS_X1] != length_[LINEAR_AXIS_Y1] ||
-        length_[LINEAR_AXIS_Y1] != length_[LINEAR_AXIS_Y2] ||
-        length_[LINEAR_AXIS_Y2] != length_[LINEAR_AXIS_Z1] ||
-        length_[LINEAR_AXIS_Z1] != length_[LINEAR_AXIS_Z2]) {
-      is_err = true;
-    }
+
+  if (length_[LINEAR_AXIS_X1] == 0 ||
+      length_[LINEAR_AXIS_X1] != length_[LINEAR_AXIS_Y1] ||
+      length_[LINEAR_AXIS_Y1] != length_[LINEAR_AXIS_Z1]) {
+    is_err = true;
   }
 
   if (CheckModuleType() != E_SUCCESS || is_err) {
@@ -383,20 +382,34 @@ MachineSize Linear::UpdateMachineSize() {
     Z_HOME_DIR = 1;
     Z_DIR = false;
 
-    LOOP_XN(i) home_offset[i] = s_home_offset[i];
+    // TODO: update leveling mesh
+    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER) {
+      LOOP_XN(i) home_offset[i] = s_home_offset_3dp2e[i];
+      // #define S_HOME_OFFSET_3DP2E_DEFAULT {-21, -17, 0, 0}
 
-    X_DEF_SIZE = 160;
-    Y_DEF_SIZE = 160;
-    Z_DEF_SIZE = 145;
+      // X_DEF_SIZE / 2 + MAGNET_X_SPAN / 2 + homeoffset[x] <= X_MAX_POS
+      X_DEF_SIZE = 146;
+      Y_DEF_SIZE = 148;
+      Z_DEF_SIZE = 145;
 
-    MAGNET_X_SPAN = 114;
-    MAGNET_Y_SPAN = 114;
+      MAGNET_X_SPAN = 116;  // X_DEF_SIZE - 30
+      MAGNET_Y_SPAN = 118;  // Y_DEF_SIZE - 30
+    }
+    else {
+      LOOP_XN(i) home_offset[i] = s_home_offset[i];
+      X_DEF_SIZE = 160;
+      Y_DEF_SIZE = 160;
+      Z_DEF_SIZE = 145;
+
+      MAGNET_X_SPAN = 114;
+      MAGNET_Y_SPAN = 114;
+    }
 
     machine_size_ = MACHINE_SIZE_A150;
 
   } else if (length_[LINEAR_AXIS_X1] < 300) {
     LOG_I("Model: A250\n");
-    X_MAX_POS = 252;
+    X_MAX_POS = 260;
     Y_MAX_POS = 260;
     Z_MAX_POS = 235;
     X_HOME_DIR = -1;
@@ -406,20 +419,35 @@ MachineSize Linear::UpdateMachineSize() {
     Z_HOME_DIR = 1;
     Z_DIR = false;
 
-    LOOP_XN(i) home_offset[i] = m_home_offset[i];
+    // TODO: update leveling mesh
+    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER) {
+      // #define M_HOME_OFFSET_3DP2E_DEFAULT {-28, -20, 0, 0}
 
-    X_DEF_SIZE = 230;
-    Y_DEF_SIZE = 250;
-    Z_DEF_SIZE = 235;
+      LOOP_XN(i) home_offset[i] = m_home_offset_3dp2e[i];
+      // X_DEF_SIZE / 2 + MAGNET_X_SPAN / 2 + homeoffset[x] <= X_MAX_POS
+      X_DEF_SIZE = 232;
+      // Y_DEF_SIZE / 2 + MAGNET_Y_SPAN / 2 + homeoffset[y] <= Y_MAX_POS
+      Y_DEF_SIZE = 240;
+      Z_DEF_SIZE = 235; // unused & spec is lager than actual size.  334 - 6 = 328?
 
-    MAGNET_X_SPAN = 184;
-    MAGNET_Y_SPAN = 204;
+      MAGNET_X_SPAN = 200;
+      MAGNET_Y_SPAN = 205;
+    }
+    else {
+      LOOP_XN(i) home_offset[i] = m_home_offset[i];
+      X_DEF_SIZE = 230;
+      Y_DEF_SIZE = 250;
+      Z_DEF_SIZE = 235;
+
+      MAGNET_X_SPAN = 184;
+      MAGNET_Y_SPAN = 204;
+    }
 
     machine_size_ = MACHINE_SIZE_A250;
   } else if (length_[LINEAR_AXIS_X1] < 400) {
     LOG_I("Model: A350\n");
-    X_MAX_POS = 345;
-    Y_MAX_POS = 357;
+    X_MAX_POS = 358;
+    Y_MAX_POS = 358;
     Z_MAX_POS = 334;
     X_HOME_DIR = -1;
     X_DIR = true;
@@ -428,14 +456,27 @@ MachineSize Linear::UpdateMachineSize() {
     Z_HOME_DIR = 1;
     Z_DIR = false;
 
-    LOOP_XN(i) home_offset[i] = l_home_offset[i];
+    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER) {
+      LOOP_XN(i) home_offset[i] = l_home_offset_3dp2e[i];
 
-    X_DEF_SIZE = 320;
-    Y_DEF_SIZE = 340;
-    Z_DEF_SIZE = 330; // unused & spec is lager than actual size.  334 - 6 = 328?
+      // X_DEF_SIZE / 2 + MAGNET_X_SPAN / 2 + homeoffset[x] <= X_MAX_POS
+      X_DEF_SIZE = 320;
+      // Y_DEF_SIZE / 2 + MAGNET_Y_SPAN / 2 + homeoffset[y] <= Y_MAX_POS
+      Y_DEF_SIZE = 340;
+      Z_DEF_SIZE = 290; // unused & spec is lager than actual size.  334 - 6 = 328?
 
-    MAGNET_X_SPAN = 274;
-    MAGNET_Y_SPAN = 304;
+      MAGNET_X_SPAN = 280;
+      MAGNET_Y_SPAN = 300;
+    }
+    else {
+      LOOP_XN(i) home_offset[i] = l_home_offset[i];
+      X_DEF_SIZE = 320;
+      Y_DEF_SIZE = 352;
+      Z_DEF_SIZE = 330; // unused & spec is lager than actual size.  334 - 6 = 328?
+
+      MAGNET_X_SPAN = 274;
+      MAGNET_Y_SPAN = 304;
+    }
 
     machine_size_ = MACHINE_SIZE_A350;
   }
@@ -525,4 +566,23 @@ ErrCode Linear::GetLengthOrLead(SSTP_Event_t &event, uint8_t ext_cmd) {
   event.length = (uint16_t)j;
 
   return hmi.Send(event);
+}
+
+void Linear::ShowAllLinearInfo(void) {
+  char tmp_buff[100];
+  for (int i = 0; i <= LINEAR_AXIS_Z2; i++) {
+    if (linear.mac_index_[i] != 0xFF) {
+      memset(tmp_buff, 0, 100);
+      sprintf(tmp_buff,"linear %c%d length: %d mm, lead: %d mm\n",axis_codes[(i > 2 ? i - 3 : i)], \
+              i > 2 ? 2 : 1, linear.length_[i], (200 * 16 / linear.lead_[i]));
+      SERIAL_ECHOPAIR(tmp_buff);
+    }
+
+    if (linear_tmc.mac_index_[i] != 0xFF) {
+      memset(tmp_buff, 0, 100);
+      sprintf(tmp_buff,"linear_tmc %c%d length: %u mm, lead: %u mm\n",axis_codes[(i > 2 ? i - 3 : i)], \
+        i > 2 ? 2 : 1, linear_tmc.length_[i], (200 * 16 / linear_tmc.lead_[i]));
+      SERIAL_ECHOPAIR(tmp_buff);
+    }
+  }
 }

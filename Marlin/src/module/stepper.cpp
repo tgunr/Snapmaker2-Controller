@@ -80,6 +80,9 @@
 #include "stepper.h"
 
 Stepper stepper; // Singleton
+#if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+  uint8_t E_ENABLE_ON = 1;
+#endif
 
 #if HAS_MOTOR_CURRENT_PWM
   bool Stepper::initialized; // = false
@@ -99,6 +102,7 @@ Stepper stepper; // Singleton
 #include "../HAL/shared/Delay.h"
 #include "../../../snapmaker/src/module/emergency_stop.h"
 #include "../../../snapmaker/src/snapmaker.h"
+#include "../../../snapmaker/src/module/toolhead_laser.h"
 
 #if MB(ALLIGATOR)
   #include "../feature/dac/dac_dac084s085.h"
@@ -143,6 +147,9 @@ uint8_t Stepper::last_direction_bits, // = 0
 #endif
 
 bool Stepper::abort_current_block;
+#if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+  bool Stepper::abort_e_moves;
+#endif
 
 #if DISABLED(MIXING_EXTRUDER) && EXTRUDERS > 1
   uint8_t Stepper::last_moved_extruder = 0xFF;
@@ -222,6 +229,12 @@ volatile int32_t Stepper::endstops_trigsteps[XYZ];
 
 volatile int32_t Stepper::count_position[NUM_AXIS] = { 0 };
 int8_t Stepper::count_direction[NUM_AXIS] = { 0, 0, 0, 0, 0 };
+
+Stepper::stepper_laser_t Stepper::laser_trap = {
+  .enabled = false,
+  .cur_power = 0,
+  .cruise_set = false
+};
 
 #define DUAL_ENDSTOP_APPLY_STEP(A,V)                                                                                        \
   if (separate_multi_axis) {                                                                                                \
@@ -1268,8 +1281,8 @@ static char pre_inter_str[] = ", ";
 HAL_STEP_TIMER_ISR() {
   #if ENABLED(DEBUG_ISR_LATENCY)
     hal_timer_t latency = HAL_timer_get_count(STEP_TIMER_NUM);
-    if (latency > 4) {
-      SERIAL_ECHOLNPAIR(latency_str, latency, pre_inter_str, Stepper::pre_isr_ticks);
+    if (latency > 10*STEPPER_TIMER_TICKS_PER_US) {
+      SERIAL_ECHOLNPAIR(latency_str, latency/STEPPER_TIMER_TICKS_PER_US, pre_inter_str, Stepper::pre_isr_ticks/STEPPER_TIMER_TICKS_PER_US);
     }
   #endif
 
@@ -1328,6 +1341,26 @@ void Stepper::isr() {
     ENABLE_ISRS();
     return;
   }
+
+  #if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+  if (abort_e_moves) {
+    abort_e_moves = false;
+    if (TEST(axis_did_move, E_AXIS)) {
+      if (current_block) {
+        axis_did_move = 0;
+        current_block = NULL;
+        planner.block_buffer_nonbusy = planner.block_buffer_tail = \
+        planner.block_buffer_planned = planner.block_buffer_head;
+      }
+    }
+    // interval = 1 ms
+    HAL_timer_set_compare(STEP_TIMER_NUM,
+        hal_timer_t(HAL_timer_get_count(STEP_TIMER_NUM) + (STEPPER_TIMER_RATE / 1000)));
+
+    ENABLE_ISRS();
+    return;
+  }
+  #endif
 
   do {
     // Enable ISRs to reduce USART processing latency
@@ -1643,6 +1676,12 @@ uint32_t Stepper::stepper_block_phase_isr() {
           }
           else if (LA_steps) nextAdvanceISR = 0;
         #endif // LIN_ADVANCE
+
+        // Update laser - Accelerating
+        if (laser_trap.enabled) {
+          laser_trap.cur_power = (current_block->laser.power * acc_step_rate) / current_block->nominal_rate;
+          laser->TurnOn_ISR(laser_trap.cur_power);
+        }
       }
       // Are we in Deceleration phase ?
       else if (step_events_completed > decelerate_after) {
@@ -1691,6 +1730,12 @@ uint32_t Stepper::stepper_block_phase_isr() {
           }
           else if (LA_steps) nextAdvanceISR = 0;
         #endif // LIN_ADVANCE
+
+        // Update laser - Decelerating
+        if (laser_trap.enabled) {
+          laser_trap.cur_power = (current_block->laser.power * step_rate) / current_block->nominal_rate;
+          laser->TurnOn_ISR(laser_trap.cur_power);
+        }
       }
       // We must be in cruise phase otherwise
       else {
@@ -1708,6 +1753,15 @@ uint32_t Stepper::stepper_block_phase_isr() {
 
         // The timer interval is just the nominal value for the nominal speed
         interval = ticks_nominal;
+
+        // Update laser - Cruising
+        if (laser_trap.enabled) {
+          if (!laser_trap.cruise_set) {
+            laser_trap.cur_power = current_block->laser.power;
+            laser->TurnOn_ISR(laser_trap.cur_power);
+            laser_trap.cruise_set = true;
+          }
+        }
       }
     }
   }
@@ -1797,12 +1851,19 @@ uint32_t Stepper::stepper_block_phase_isr() {
 
       #define B_MOVE_TEST !!current_block->steps[B_AXIS]
 
+      #if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+        #define E_MOVE_TEST !!current_block->steps[E_AXIS]
+      #endif
+
       uint8_t axis_bits = 0;
       if (X_MOVE_TEST) SBI(axis_bits, X_AXIS);
       if (Y_MOVE_TEST) SBI(axis_bits, Y_AXIS);
       if (Z_MOVE_TEST) SBI(axis_bits, Z_AXIS);
       if (B_MOVE_TEST) SBI(axis_bits, B_AXIS);
-      //if (!!current_block->steps[E_AXIS]) SBI(axis_bits, E_AXIS);
+      #if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+        if (E_MOVE_TEST) SBI(axis_bits, E_AXIS);
+      #endif
+      // if (!!current_block->steps[E_AXIS]) SBI(axis_bits, E_AXIS);
       //if (!!current_block->steps[A_AXIS]) SBI(axis_bits, X_HEAD);
       //if (!!current_block->steps[B_AXIS]) SBI(axis_bits, Y_HEAD);
       //if (!!current_block->steps[C_AXIS]) SBI(axis_bits, Z_HEAD);
@@ -1888,6 +1949,13 @@ uint32_t Stepper::stepper_block_phase_isr() {
         #endif
         set_directions();
       }
+
+      // Set up inline laser power
+      laser_trap.enabled = current_block->laser.status.isEnabled;
+      laser_trap.cur_power = current_block->laser.power_entry; // RESET STATE
+      laser_trap.cruise_set = false;
+      if (laser_trap.enabled)
+        laser->TurnOn_ISR(laser_trap.cur_power);
 
       // At this point, we must ensure the movement about to execute isn't
       // trying to force the head against a limit switch. If using interrupt-
@@ -2046,11 +2114,11 @@ bool Stepper::is_block_busy(const block_t* const block) {
   return block == vnew;
 }
 
-uint8_t x_step_pin, x_dir_pin, x_enable_pin;
-uint8_t y_step_pin, y_dir_pin, y_enable_pin;
-uint8_t z_step_pin, z_dir_pin, z_enable_pin;
-uint8_t b_step_pin, b_dir_pin, b_enable_pin;
-uint8_t e0_step_pin, e0_dir_pin, e0_enable_pin;
+int8_t x_step_pin, x_dir_pin, x_enable_pin;
+int8_t y_step_pin, y_dir_pin, y_enable_pin;
+int8_t z_step_pin, z_dir_pin, z_enable_pin;
+int8_t b_step_pin, b_dir_pin, b_enable_pin;
+int8_t e0_step_pin, e0_dir_pin, e0_enable_pin;
 
 void Stepper::StepperPinRemap() {
   uint8_t port_to_pin[][STEPPER_PIN_COUNT] = PORT_TO_STEP_PIN;
@@ -2301,6 +2369,17 @@ int32_t Stepper::position(const AxisEnum axis) {
   #endif
   return v;
 }
+
+#if (MOTHERBOARD == BOARD_SNAPMAKER_2_0)
+  void Stepper::e_moves_quick_stop_triggered() {
+    const bool was_enabled = STEPPER_ISR_ENABLED();
+    if (was_enabled) DISABLE_STEPPER_DRIVER_INTERRUPT();
+
+    quick_stop_e_moves();
+
+    if (was_enabled) ENABLE_STEPPER_DRIVER_INTERRUPT();
+  }
+#endif
 
 // Signal endstops were triggered - This function can be called from
 // an ISR context  (Temperature, Stepper or limits ISR), so we must

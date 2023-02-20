@@ -59,6 +59,8 @@ void GcodeSuite::M1005() {
     canhost.ShowModuleVersion(mac);
   }
 
+  linear_p->ShowAllLinearInfo();
+
   if (ModuleBase::toolhead() == MACHINE_TYPE_LASER || (ModuleBase::toolhead() == MACHINE_TYPE_LASER_10W)) {
     laser->ReadBluetoothVer();
   }
@@ -88,7 +90,13 @@ void GcodeSuite::M1006() {
 
   switch (ModuleBase::toolhead()) {
   case MODULE_TOOLHEAD_3DP:
+  case MODULE_TOOLHEAD_DUALEXTRUDER:
     SERIAL_ECHOLN("3DP");
+    if (ModuleBase::toolhead() == MODULE_TOOLHEAD_DUALEXTRUDER) {
+      printer1->ShowInfo();
+      // show hotend offset
+      M218();
+    }
     break;
 
   case MODULE_TOOLHEAD_LASER:
