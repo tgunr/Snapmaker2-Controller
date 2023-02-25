@@ -44,7 +44,6 @@
 #define BIAS_hotend_offsetY                    1.2
 #define BIAS_hotend_offsetZ                    1.2
 
-#define MIN_LEVELING_HEIGHT_3DP2E               (35)
 
 ToolHeadDualExtruder printer_dualextruder(MODULE_DEVICE_ID_DUAL_EXTRUDER);
 
@@ -482,7 +481,7 @@ ErrCode ToolHeadDualExtruder::SetFan(uint8_t fan_index, uint8_t speed, uint8_t d
   return canhost.SendStdCmd(cmd, 0);
 }
 
-ErrCode ToolHeadDualExtruder::SetHeater(uint16_t target_temp, uint8_t extrude_index /*=0*/) {
+ErrCode ToolHeadDualExtruder::SetHeater(int16_t target_temp, uint8_t extrude_index /*=0*/) {
   if (extrude_index >= EXTRUDERS) {
     return E_PARAM;
   }
